@@ -1,0 +1,70 @@
+# REVISED
+# Updates to JupyterLab
+#
+FROM quay.io/domino/compute-environment-images:ubuntu20-py3.9-r4.3-domino5.8-standard
+
+USER root
+
+RUN apt-get remove -y --purge rstudio-server && \
+  wget -nv https://download2.rstudio.org/server/focal/amd64/rstudio-server-2023.12.1-402-amd64.deb && \
+  gdebi -n rstudio-server-2023.12.1-402-amd64.deb && \
+  apt-get clean && \
+  rm -f rstudio-server-2023.12.1-402-amd64.deb && \
+  ln -sf /usr/lib/rstudio-server /usr/local/lib/rstudio-server && \
+  chown -R ${DOMINO_USER}:${DOMINO_GROUP} /usr/lib/rstudio-server && \
+  chown -R ${DOMINO_USER}:${DOMINO_GROUP} /var/lib/rstudio-server && \
+  chown ${DOMINO_USER}:${DOMINO_GROUP} /etc/rstudio/rserver.conf && \
+  chown ${DOMINO_USER}:${DOMINO_GROUP} /etc/rstudio/rsession.conf && \
+  ln -sf /usr/lib/rstudio-server/bin/pandoc/pandoc /usr/local/bin/pandoc && \
+  ln -sf /usr/lib/rstudio-server/bin/pandoc/pandoc-citeproc /usr/local/bin/pandoc-citeproc
+
+USER root
+ENV CONDA_DIR /opt/conda
+ENV CONDA_DIR /opt/conda
+ENV PATH $CONDA_DIR/bin:$PATH
+ENV MINICONDA_VERSION py310_23.5.1-0
+ENV MINICONDA_SHA 9f4cd0a9f7289a1e03b79fe6d06bab0769c46c33a774ea8a94dc3c1883344d85
+RUN pip list >> /tmp/pip-list.txt && \
+ conda list >> /tmp/conda-list.txt
+WORKDIR /tmp
+# set env variables so they are available in Domino runs/workspaces
+RUN echo "export CONDA_DIR=${CONDA_DIR}" >> /home/${DOMINO_USER}/.domino-defaults && \
+    echo "export PATH=/home/${DOMINO_USER}/.local/bin:\$PATH" >> /home/${DOMINO_USER}/.domino-defaults && \
+    wget --no-check-certificate -nv https://repo.anaconda.com/miniconda/Miniconda3-py310_23.5.1-0-Linux-x86_64.sh && \
+    echo "${MINICONDA_SHA} *Miniconda3-${MINICONDA_VERSION}-Linux-x86_64.sh" | sha256sum -c - && \
+    /bin/bash Miniconda3-${MINICONDA_VERSION}-Linux-x86_64.sh -f -b -p $CONDA_DIR && \
+    rm Miniconda3-${MINICONDA_VERSION}-Linux-x86_64.sh && \
+# Make sure pip3 is in conda_dir
+    ln -sf $CONDA_DIR/bin/pip $CONDA_DIR/bin/pip3 || true; \
+# Make all conda packages up-to-date
+##    conda update -y --update-all && \
+# Make sure conda also on PATH for root user
+    echo "export PATH=${CONDA_DIR}/bin:\$PATH" >> /etc/bash.bashrc && \
+# make conda folder permissioned for user
+    chown ${DOMINO_USER}:${DOMINO_GROUP} -R $CONDA_DIR && \
+# Cleanup
+    find /opt/conda/ -follow -type f -name '*.a' -delete && \
+    find /opt/conda/ -follow -type f -name '*.js.map' -delete && \
+    /opt/conda/bin/conda clean -afy && \
+    rm -Rf /tmp/*
+
+RUN pip install chardet charset_normalizer
+RUN conda install -c conda-forge  libpython-static==3.10.12
+
+USER ubuntu
+ARG LDFLAGS=-fno-lto
+ENV LDFLAGS=-fno-lto
+RUN pip install --no-cache-dir uwsgi Flask Flask-Compress Flask-Cors six prometheus-client "typing-extensions~=4.4.0" jsonschema "dominodatalab>=1.2" fastapi
+RUN pip install jupyterlab jupyter --upgrade
+
+# Ensure old packages get rebuilt
+USER root
+RUN chown -R $DOMINO_USER:$DOMINO_GROUP /opt/conda/lib/python3.10
+RUN conda update -y --update-all
+
+
+# Re-install 'folder based packages' from the conda subfolder post-upgrade, instead of repeat installation with potential out-of-date list
+RUN /opt/conda/bin/conda config --set solver classic
+RUN cd /opt/conda/lib/python3.9/site-packages && ls -b |grep -v \- | xargs echo | xargs /opt/conda/bin/conda install -y -c conda-forge {} || echo "Print this in case a package has problems or errors"
+
+RUN chown -R $DOMINO_USER:$DOMINO_GROUP /opt/conda/lib
